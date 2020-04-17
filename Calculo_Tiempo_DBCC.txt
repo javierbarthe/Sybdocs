@@ -1,0 +1,7 @@
+a)  If dbcc checkalloc is runing, take a metric of pages per hour processed  (using master..sysprocesses.physical_io)  please be as much accurate as possible
+    so A = Pages / hs  rate (of dbcc checkalloc)
+
+b) Take the total size of DB in pages (2k I assume)
+    B = Total DB pages   (data+log)
+
+c)   Aprox amount in hours should be somwhere between ( A * 1.2 ) / B      and    ( A * 1.7) / B

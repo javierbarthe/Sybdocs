@@ -1,0 +1,244 @@
+Server Version:        Adaptive Server Enterprise/15.7/EBF 25127 SMP SP136 /P/x
+                       86_64/Enterprise Linux/ase157sp136x/3955/64-bit/FBO/Mon
+                       Oct 19 19:12:00 2015
+
+  Engine Utilization (Tick %)   User Busy   System Busy    I/O Busy        Idle
+  -------------------------  ------------  ------------  ----------  ----------
+  ThreadPool : syb_default_pool
+   Engine 0                         0.7 %         0.0 %      96.7 %       2.6 %
+   Engine 1                         1.4 %         0.1 %      96.1 %       2.3 %
+   Engine 2                         1.2 %         0.2 %      96.1 %       2.5 %
+   Engine 3                         1.3 %         0.1 %      96.2 %       2.4 %
+  -------------------------  ------------  ------------  ----------  ----------
+  Pool Summary        Total         4.7 %         0.4 %     385.2 %       9.8 %
+                    Average         1.2 %         0.1 %      96.3 %       2.4 %
+
+  -------------------------  ------------  ------------  ----------  ----------
+  Server Summary      Total         4.7 %         0.4 %     385.2 %       9.8 %
+                    Average         1.2 %         0.1 %      96.3 %       2.4 %
+
+Server Version:        Adaptive Server Enterprise/15.7.0/EBF 24721 SMP SP64 /P/
+                       X64/Windows Server/ase157x/3384/64-bit/OPT/Fri Jun 26 01
+                       :22:43 2015
+
+  Engine Utilization (Tick %)   User Busy   System Busy    I/O Busy        Idle
+  -------------------------  ------------  ------------  ----------  ----------
+  ThreadPool : syb_default_pool
+   Engine 0                         0.4 %         0.0 %       1.0 %      98.5 %
+   Engine 1                         0.0 %         0.0 %       1.0 %      99.0 %
+   Engine 2                         0.3 %         0.0 %       1.0 %      98.7 %
+  -------------------------  ------------  ------------  ----------  ----------
+  Pool Summary        Total         0.7 %         0.0 %       3.1 %     296.2 %
+                    Average         0.2 %         0.0 %       1.0 %      98.7 %
+
+  -------------------------  ------------  ------------  ----------  ----------
+  Server Summary      Total         0.7 %         0.0 %       3.1 %     296.2 %
+                    Average         0.2 %         0.0 %       1.0 %      98.7 %
+
+
+
+Server Version:        Adaptive Server Enterprise/15.5/EBF 23123 SMP ESD#5.4/P/
+                       RS6000/AIX 5.3/asear155/2629/64-bit/FBO/Fri Jul 18 06:34
+                       :18 2014
+  Engine Busy Utilization        CPU Busy   I/O Busy       Idle
+  ------------------------       --------   --------   --------
+    Engine 0                        0.0 %      0.0 %    100.0 %
+    Engine 1                        0.1 %      0.0 %     99.9 %
+    Engine 2                        0.0 %      0.0 %    100.0 %
+    Engine 3                        0.0 %      0.0 %    100.0 %
+    Engine 4                        0.0 %      0.1 %     99.9 %
+    Engine 5                        0.0 %      0.0 %    100.0 %
+    Engine 6                        0.0 %      0.0 %    100.0 %
+    Engine 7                        0.0 %      0.0 %    100.0 %
+    Engine 8                        0.1 %      0.0 %     99.9 %
+    Engine 9                        0.0 %      0.0 %    100.0 %
+    Engine 10                       0.0 %      0.0 %    100.0 %
+    Engine 11                       0.0 %      0.0 %    100.0 %
+    Engine 12                       0.0 %      0.0 %    100.0 %
+    Engine 13                       0.0 %      0.0 %    100.0 %
+    Engine 14                       0.0 %      0.0 %    100.0 %
+    Engine 15                       0.0 %      0.0 %    100.0 %
+  ------------------------       --------   --------   --------
+  Summary           Total           0.1 %      0.1 %   1599.7 %
+                  Average           0.0 %      0.0 %    100.0 %
+					
+					
+
+ulimits - /etc/security/limits.conf
+shared memory - sysctl.conf
+noop scheduler
+/proc/sys/fs/aio_max_nr 
+5 ms per IO or better
+turn off journaling
+sort buffers 5000
+direct io off dsync off tempdb
+max buffers per lava operator 20480
+session tempdb log cache size 32768
+sa only listener and tempdb
+enable housekeeper GC (4=batches / 5=OLTP)
+fastfirstrow -> optimizes queries so that ASE returns first row as quick as possible
+
+
+
+					
+15.7
+Full sleeps are good.
+High % of interrupted sleeps may indicate idle timeout is too low
+Look out for major faults…those are bad and indicate a memory shortage on the host.
+High % of non‐voluntary likely means the CPUs are over subscribed.
+I/O Controlers
+Look out for “Polls Returning Max Events” or high Events Per Poll
+Consider adding an I/O task if you get “polls returning max events” or events per poll > 3
+Blocking pool
+Consider increasing the pool size if Queued Requests or Wait Time > 0
+
+OS Utilization vs. Engine Utilization•OS < Engine, look for CPU starvation•Engine >> OS, utilization could mean idle timeout is too highDeep
+
+Threaded Kernel sp_sysmon
+
+– Average Running Tasks, always 1,5,15 minute moving averages
+– CPU Yields “full sleeps”/”interrupted sleeps” high percent “interrupted sleep” increase “idle timeout”
+– Thread Utilization, if >70% increase thread count, if thread utilization > engine utilization increase “idle timeout”
+as engine not getting enough CPU time
+– Page Faults and Context Switches, high counts page faults, involuntary context switches – lack of resources (CPU/memory)
+– IO Controllers, DiskControllerActivity/NetControllerActivity equivalent to Disk/Network Checks.
+If polls returning max events or events per poll > 3 increase “number of disk/network tasks”
+– Blocking Call Activity
+If value of queued requests is high compared to serviced requests or wait time is nonzero increase number of threads in syb_blocking_pool
+
+Spinlocks
+– Hash tables to reference memory structures
+– spinlock/semaphone same in sp_sysmon
+– Log Semaphore Contention, if % of total >20% and “ULC Flushed to Xact Log” and “by Full ULC” also >20%, ULC may be too small
+– By Full ULC, if >20% consider increasing ULC
+– By Change of Database, ULC flushed when modifies object in different database
+– By Single Record, by Unpin, by Other if >20% decrease ULC
+– When MAX ULC Size = log cache size check flushes bu Full ULC, if >20% consider increasing ULC
+– ULC Spinlock Ratio – number of ULC Caches controlled per spinlock
+
+– Cache Turnover, Buffers Grabbed dirty should be 0, else adjust wash marker
+
+Grabbed Dirty not 0 – significant performance problem
+– Increase wash size immediate
+
+ASE Spinlocks
+
+– user log cache spinlock ratio
+
+– open object spinlock ratio
+
+– lock table spinkock ratio
+
+– data cache partitions
+
+No spinlocks for IO pools or if there is only 1 engine
+
+Access to a hash table is serialized by a spin lock.
+
+Mechanism for spinning is platform specific, some platforms loop on NOP instruction.
+
+– CPINFOMEM_SPIN Resource->rprocpgr_spin
+
+– SSQLCACHE_SPIN Resource-> # New spinlocks
+
+– Pdes spinlock # Older spinlocks
+
+– Sched Q
+
+– default data cache
+
+Caches work on dbid/logical page #
+
+Hash table automatically sized depending on resource pool size
+
+Each cell is a linked list.
+
+Pointer holds buffer ID and page ID
+
+LIsts grow and shrink depending upon buffer allocation and deallocation
+
+Average chain length is visible in sp_sysmon
+
+Select Query – ASE hashs page ID (dbID + logical page #) to a cell number
+
+Buffers reads – update used count for the buffer so buffers are not removed from cache
+
+sp_sysmon does not show all spinlocks
+
+sp_sysmon Spinlock Contentsions are Wait/Grab percentage not relative overhead of different spinlocks and number of spins.
+
+sysmonitors Table http://scn.sap.com/docs/DCC-
+
+master..monSpinLockActivity 15.7 ESD#2 – total since last server restart
+
+100 named spinlocks – Spins(1 or a series of spins? overhead count not be 1, may be platform specific),Grabs (1 grab),Waits(1 wait).
+
+sp__tsnap topspins,help
+
+Procedure cache – 1 spinlock, increase size
+
+Reduce spinlock ratio 100:1 to 10:1
+
+Increase cache partitions higher than number of engines?
+
+Buffers can move between partitions!
+
+Spinlock waits
+
+– short waits
+
+– SPID uses 1 spinlock per page retrieved, may need to access may partition spinlocks
+
+Logical Lock Waits
+
+– in sleep queue (long waits)
+
+MASS (Memory Address Space Segment) waits on AIOs due to checkpoint,housekeepers
+
+– waiting in sleep queue (medium to long waits)
+
+– 1 MASS bit protects 1-8 (IO pool size) buffers during IO
+
+Proc cache size
+
+– 1 spinlock for proc cache buffers, there are others proc cache related
+
+– ELC 15.7 GA 50%, 15.7 SP100 20%
+
+– Each engine as comes online is pre-allocated equal slice of ELC
+
+– ELCs can expand from global block pool aka Global Cache (GC)
+
+– dbcc proc_cache(print_elc)
+
+– proc cache – 1 spinlock for updating allocation bitmap pages
+
+– Statement cache up to it’s limits can steal from proc cache (Global Cache+ELC’s)
+
+Turn on TF753, leave TFx off TF758
+
+If using statement cache turn off “streamlined dynamic SQL” and “enable plan sharing”
+
+CR#744179 turn off plan sharing
+
+CR#760876 turn off streamlined dynamic SQL
+
+Use TF7738 – Support plan sharing of cached statements across different user logins
+
+cache statement spinlock – SSQLCACHE_SPIN
+
+If dynamic SQL rather than prepared statements – spinlock Resource->rdesmgr_spin (Open Object Descriptors)
+
+grep "Interrupted Sleeps" sysmon.1707162100 | awk '{ sum += $6; n++ } END { if (n > 0) print sum / n; }'
+
+IO Controler
+grep "Polls Returning Max Events" sysmon.1707162100 | head -1 | awk '{print $8}'
+grep "Events Per Poll" sysmon.1707162100 | head -1 | awk '{print $6}'
+NET Controllers
+grep "Polls Returning Max Events" sysmon.1707162100 | tail -1 | awk '{print $8}'
+grep "Events Per Poll" sysmon.1707162100 | tail -1 | awk '{print $6}'
+
+NonVoluntaryCSO
+grep "Non-Voluntary" sysmon.1707162100 | sort -nrk5 | head -1 | awk '{print $5}'
+MajorFaults
+grep "Major Faults" sysmon.1707162100 | awk '{print $6}'
