@@ -1,0 +1,1674 @@
+/* 
+ * GRANT_SA.SQL
+ * 
+ * Description
+ * ===========
+ * This file contains stored procedures which, in combination with 
+ * user-defined roles, allow non-priviliges users to execute commands that 
+ * require sa_role, without allowing those users to enable sa_role themselves.
+ * This script requires ASE 12.0 or later (because the 'sp_kill' procedure 
+ * uses the "execute immediate" functionality).
+ *
+ * See http://www.sypron.nl/grant_sa.html for a more detailed description of  
+ * the background of these procedures and various related issues, including 
+ * security considerations.
+ * 
+ *
+ * The following stored procedures are contained in this file :
+ * 
+ * sp_kill 
+ * -------
+ *   ==> allows non-priviliged users to kill their own sessions
+ *     
+ * sp_sysmon_public
+ * ----------------
+ *   ==> allows non-priviliged users to run sp_sysmon
+ * 
+ * sp_showplan_public
+ * ----------------
+ *   ==> allows non-priviliged users to run sp_showplan
+ * 
+ * sp_shutdown
+ * -----------
+ *   ==> allows non-priviliged users to shut down ASE,
+ *       optionally 'with nowait'
+ * 
+ * sp_sqltext
+ * ----------
+ *   ==> allows non-priviliged users to run 'dbcc sqltext'
+ *       on their own sessions
+ *   Note: this procedure runs only on 12.5.0.3 ESD#2 or later.
+ *  
+ * sp_optimizer_trace
+ * ------------------
+ * (author: Steve Bradley, Steve.Bradley@NielsenMedia.com) 
+ *   ==> allows non-priviliged users to run T-SQL statements
+ *       while viewing the output of optimizer traceflags 
+ *       302,310,317 
+ *   Note: this procedure runs only on 12.5.0.3 ESD#2 or later.
+ * 
+ *
+ * Security issues
+ * ===============
+ * Be aware of the following security issues:
+ *     - the password for the user-defined role should be kept secret
+ *     - don't give any execute permissions on 'sp_enable_indirect_sa_role'
+ *       to public; this will effectively give sa_role to everyone.
+ *     - it is assumed that sybsystemprocs is owned by 'sa' and that no 
+ *       dbo alias user is defined in sybsystemprocs (this is related to 
+ *       the previous point)
+ *     - CIS is used to guarantee security of these procedures. Do not 
+ *       grant permission on the "connect" command, or the security might 
+ *       be endangered. 
+ * 
+ * See http://www.sypron.nl/grant_sa.html for additional details on these 
+ * security issues.
+ *
+ *
+ * Installation
+ * ============
+ * Execute this script using "isql", using a login having both "sa_role"
+ * and "sso_role". Before execution, do the following:
+ *
+ *     - edit this file and change all occurrences of the following strings:
+ * 
+ *          an_innocent_login  (1 occurrence, excluding this line)
+ *          mysecretpassword   (2 occurrences, excluding this line)
+ *
+ *     - execute the modified file by a login having "sa_role" and "sso_role"
+ *
+ *     - after executing this file, either delete it, or make sure it is 
+ *       well-protected (because it contains the role password giving access 
+ *       to sa_role!)
+ *
+ *     - for the stored procedures to work correctly, some CIS-related
+ *       configuration settings need to be set. When these are not set
+ *       correctly, the user will be notified automatically.
+ *
+ *     - sp_sqltext and sp_optimizer_trace run only on ASE 12.5.0.3 ESD#2
+ *       or later; also, the installation script will only install these 
+ *       procs on 12.5.0.3 ESD#2 or later. The reason is that these procs
+ *       rely on a change in behaviour of traceflag enabling since this ESD.
+ *       See www.sypron.nl/grant_sa.html for details.
+ *       Technically, these procedures could be installed in earlier ASE
+ *       versions as well, but they would be completely useless since no output
+ *       would be visible...
+ *
+ * Note: this software has been tested on ASE 12.0, 12.5, 15.x, and 15.7.
+ *   
+ * 
+ * Revision History
+ * ================
+ * Version 1.0  13-Oct-2001
+ * Version 1.1  12-Apr-2002 Fixed comment
+ * Version 1.2  13-Jul-2002 Added check to avoid killing yourself
+ * Version 1.3  01-Oct-2002 Added sp_shutdown
+ * Version 1.4  04-Jan-2004 Added sp_sqltext, sp_optimizer_trace
+ * Version 1.5  Feb-2005    Removed check for 'max cis remote connections'
+ *                          in 12.5+.
+ * Version 1.6  Mar-2013    Updated for ASE 15.7
+ *
+ *
+ * Copyright Note & Disclaimer :
+ * =============================
+ * By downloading and/or installing the software in this file, you
+ * accept the conditions stated below. 
+ * This software is provided "as is"; there is no warranty of any kind.
+ * While this software is believed to work accurately, it may not work 
+ * correctly and/or reliably in a production environment. In no event shall  
+ * Rob Verschoor and/or Sypron B.V. be liable for any damages resulting 
+ * from the use of this software. 
+ * You are allowed to use this software free of charge for your own 
+ * professional, non-commercial purposes. 
+ * You are not allowed to sell or bundle this software or use it for any 
+ * other commercial purpose without prior written permission from 
+ * Rob Verschoor/Sypron B.V.
+ * You may (re)distribute only unaltered copies of this software, which 
+ * must include this copyright note, as well as the copyright note in 
+ * the header of each stored procedure.
+ *
+ * Note: All trademarks are acknowledged.
+ *
+ * Please send any comments, bugs, suggestions etc. to the below email
+ * address.
+ *
+ * (c) 2001-2013 Copyright Rob Verschoor/Sypron B.V.
+ *
+ *                    Email: rob@sypron.nl
+ *                    WWW  : http://www.sypron.nl/
+ *---------------------------------------------------------------------------- 
+ */
+
+set nocount on
+go
+set flushmessage on
+go
+
+print " "
+print "Copyright (c) 2001-2013 Rob Verschoor/Sypron B.V."
+print "For more information about these stored procedures, go to"
+print "http://www.sypron.nl/grant_sa.html "
+print " " 
+
+use master
+go
+
+-- version check: requires 12.0 or later (sp_kill uses 'execute immediate')
+if object_id("sysqueryplans") is NULL
+begin
+   print ""
+   print ""
+   print "***************************************"
+   print "***************************************"
+   print " You must run ASE version 12.0 or later"
+   print " to install these stored procedures."
+   print "***************************************"
+   print "***************************************"
+   print " "
+   print " "
+   print " "
+   print "Quitting now..."
+   print " "
+   select syb_quit()
+end
+go
+
+-- check sa_role/sso_role
+if charindex("sa_role", show_role()) = 0
+or charindex("sso_role", show_role()) = 0
+begin
+   print ""
+   print ""
+   print "***************************************"
+   print "***************************************"
+   print " You need 'sa_role' and 'sso_role' "
+   print " to run this script."
+   print " Please retry..."
+   print "***************************************"
+   print "***************************************"
+   print " "
+   print " "
+   print " "
+   print "Quitting now..."
+   print " "
+   select syb_quit()
+end
+go
+
+--------------------------------------------------------------------------
+--
+-- Create a role which will give access to sa_role indirectly 
+--
+--------------------------------------------------------------------------
+
+print "Creating role 'indirect_sa_role'..."
+go
+if role_id('indirect_sa_role') <> NULL
+begin
+   drop role indirect_sa_role
+end
+go
+create role indirect_sa_role with passwd mysecretpassword
+go
+grant role sa_role to indirect_sa_role
+go
+
+
+-- Grant this role to every login that should be allowed to kill 
+-- his own processes.
+--
+-- Important: after granting this user-defined role to a login, the role
+-- will not be enabled by default. This should NOT be changed for security 
+-- reasons.
+--
+print "Granting role 'indirect_sa_role' to logins..."
+go
+grant role indirect_sa_role to an_innocent_login   -- just an example; change login name as needed
+go
+
+--------------------------------------------------------------------------
+--
+-- Create the stored procedure 'sp_rpc_setup_check'
+-- This check the RPC/CIS confiuration
+-- 
+--------------------------------------------------------------------------
+
+use sybsystemprocs
+go
+
+print "Creating procedure 'sp_rpc_setup_check'..."
+go
+if object_id("sp_rpc_setup_check") <> NULL
+  drop proc sp_rpc_setup_check
+go
+
+create procedure sp_rpc_setup_check
+/* Copyright (c) 2001-2013 Rob Verschoor/Sypron B.V. */
+   @server_alias varchar(32)output
+as
+begin
+declare @status int
+
+   set nocount on
+
+   select @status = 0
+
+   -- check @@servername has been defined
+   if @@servername is NULL
+      or not exists (select srvname
+                     from master.dbo.sysservers
+                     where srvclass = 0)
+   begin
+      print " "
+      print "Setup error: '@@servername' must be defined first."
+      print "(please run 'sp_addserver YOURSERVERNAME, local' and reboot ASE)"
+      select @status = -1
+   end
+
+   -- pick up the server name alias
+   select @server_alias = srvname
+   from master.dbo.sysservers
+   where srvname    = @@servername + "_ALIAS"
+     and srvnetname = @@servername
+
+   if @@rowcount = 0 
+   begin
+      print " "
+      print "Setup error: an alias for this ASE server name must be defined first."
+      print "(please run 'sp_addserver %1!_ALIAS, null, %2!')", @@servername, @@servername
+      select @status = -1
+   end
+
+   -- check CIS is enabled
+   if (select cc.value
+       from master.dbo.sysconfigures c, 
+            master.dbo.syscurconfigs cc
+       where c.config = cc.config
+         and c.name = "enable cis" ) <> 1
+   begin
+      print " "
+      print "Setup error: CIS must be enabled first."
+      print "(please run 'sp_configure ""enable cis"", 1' and reboot ASE)"
+      select @status = -1
+   end 
+
+   
+   if object_id("master.dbo.syscertificates") is NULL
+   begin
+	   -- in pre-12.5 only, check CIS remote connections are possible
+	   if (select cc.value
+		   from master.dbo.sysconfigures c, 
+				master.dbo.syscurconfigs cc
+		   where c.config = cc.config
+			 and c.name = "max cis remote connections" ) = 0
+	   begin
+		  print " "
+		  print "Setup error: the number of CIS remote connections must be > 0."
+		  print "(please run 'sp_configure ""max cis remote connections"", 5' and reboot ASE)"
+		  select @status = -1
+	   end
+   end
+
+   --ready
+   return @status
+end
+go
+
+grant exec on sp_rpc_setup_check to public
+go
+
+--------------------------------------------------------------------------
+--
+-- Create the stored procedure 'sp_enable_indirect_sa_role'
+-- This enables the user-defined role giving access to sa_role.
+-- This is done in a separate procedure for two reasons:
+--    1. When done in the main proc, a shared lock on syssrvroles remains
+--       active during the executon of the procedure, blocking other users
+--       wanting to enable this role; this would mean all those users
+--       would effectively be serialised (this is ASE bug CR261796).
+--    2. It's nice to have this role password only in one place.
+--
+-- By not granting exec permission on this procedure, it should be 
+-- impossible for non-privileged users to execute this procedure -- if they
+-- can, they'd acquire sa_role, so this should better not be possible.
+-- Should there ever appear be a way for ordinary users to break through this,
+-- then this procedure should be abandoned and the code should be expanded
+-- in each of the sp_*_rpc procedures in this script (this would have the 
+-- disadvantage of serialising the various users running these procedures
+-- due to that shared-page lock on syssrvroles).
+-- 
+--------------------------------------------------------------------------
+print "Creating procedure 'sp_enable_indirect_sa_role'..."
+go
+if object_id("sp_enable_indirect_sa_role") <> NULL
+  drop proc sp_enable_indirect_sa_role
+go
+
+create procedure sp_enable_indirect_sa_role
+/* Copyright (c) 2001-2013 Rob Verschoor/Sypron B.V. */
+   @key varbinary(128)
+as
+begin
+declare @my_suname varchar(32)
+
+   set nocount on
+
+   -- Only allow this procedure to run when it's called as an RPC via CIS.
+   -- This works because an CIS session always seems to have "OmniServer" as
+   -- the start of its program name.
+   -- This is to stop users from trying to execute this procedure illegally
+   if (select program_name
+       from master.dbo.sysprocesses
+       where spid = @@spid) not like "OmniServer%"
+   begin
+      print "Error: this procedure should not be invoked directly, but only as an RPC."
+      return -1
+   end
+
+   -- and yet another hurdle for folks trying to execute this procedure illegally...
+   -- (it shouldn't be necessary, but it won't hurt either...)
+   if @key is NULL or
+      @key <> (select password
+               from master.dbo.syssrvroles 
+               where name = "indirect_sa_role")
+   begin
+      print "Error: this procedure should not be invoked directly, but only via "
+      print "the proper stored procedures."
+      return -1
+   end
+
+   -- enable sa_role 
+   set role indirect_sa_role with passwd mysecretpassword on
+
+   -- check for errors in granting the role
+   if @@error <> 0
+   begin
+      select @my_suname = suser_name()
+      print " "
+      print "To allow login '%1!' to execute this procedure, your DBA should run the following command:", @my_suname 
+      print "      grant role indirect_sa_role to %1!", @my_suname
+      return -1
+   end
+
+   -- all OK
+   return 0
+end
+go
+
+-- IMPORTANT: execute permission on this procedure should NOT be granted 
+-- to public, as this would allow anyone to simply switch on sa_role. 
+-- Assuming sybsystemprocs is owned by 'sa', we leave the execution rights 
+-- with the dbo, so it will be allowed to execute via the other procedures
+-- below.
+
+-- hide the SQL code so that nobody can see the role password
+sp_hidetext sp_enable_indirect_sa_role
+go
+
+--------------------------------------------------------------------------
+--
+-- Create the stored procedure 'sp_kill'
+-- This allows a non-priviliged user to kill his own processes 
+-- via sp_kill_rpc
+-- 
+--------------------------------------------------------------------------
+
+print "Creating procedure 'sp_kill'..."
+go
+if object_id("sp_kill") <> NULL
+  drop proc sp_kill
+go
+
+create procedure sp_kill
+/* Copyright (c) 2001-2013 Rob Verschoor/Sypron B.V. */
+   @spid int = null
+as
+begin
+declare @spid_suid int, @my_suname varchar(32), @killcmd varchar(25), @cis_status int
+declare @key varbinary(128), @rpc varchar(150), @server_alias varchar(32)
+
+   set nocount on
+
+   if @spid is NULL
+   begin
+      print "Kills a spid (session), which must be owned by your login."
+      print "Usage: sp_kill <spid-no>"
+      return -1
+   end
+
+   -- check the CIS setup
+   execute @cis_status = sp_rpc_setup_check @server_alias output
+   if @cis_status <> 0
+   begin
+      -- messages have already been printed in sp_rpc_setup_check
+      return -1
+   end
+
+   -- check spid exists
+   select @spid_suid = suid
+   from master.dbo.sysprocesses 
+   where spid = @spid
+
+   if @@rowcount = 0
+   begin
+      print "Spid [%1!] not found", @spid
+      return -1
+   end
+
+   if @spid_suid <> suser_id()
+   begin
+      select @my_suname = suser_name()
+      print "Spid %1! is not owned by your login [%2!]", @spid, @my_suname
+      return -1
+   end
+
+   if @spid = @@spid
+   begin
+      select @my_suname = suser_name()
+      print "You cannot kill yourself!"
+      return -1
+   end
+
+   -- use the encrypted role password as a key to ensure
+   -- that sp_kill_rpc is invoked only via sp_kill; if this 
+   -- would be allowed, users could kill any other user's 
+   -- process, but we want to limit this to their own prcesses.
+   select @key = password
+   from master.dbo.syssrvroles 
+   where name = "indirect_sa_role"
+   
+   if @@rowcount = 0
+   begin
+      print "Error: Cannot find role 'indirect_sa_role'."
+      return -1
+   end
+
+   if @key is NULL
+   begin
+      print "Error: the role 'indirect_sa_role' must have a password."
+      return -1
+   end
+
+   --
+   -- now execute sp_kill_rpc as an RPC via CIS; this will do the real kill.
+   -- because this is done via CIS, users cannot break in to the stored
+   -- procedure that activates sa_role, so there is no security risk 
+   --
+   set cis_rpc_handling on
+
+   select @rpc = @server_alias + ".sybsystemprocs.dbo.sp_kill_rpc"
+   execute @rpc @spid, @spid_suid, @key
+
+   set cis_rpc_handling off
+
+   --ready
+   return 0
+end
+go
+
+grant exec on sp_kill to public
+go
+
+--------------------------------------------------------------------------
+--
+-- Create the stored procedure 'sp_kill_rpc'
+-- This allows a non-priviliged user to kill his own processes via sp_kill
+-- 
+--------------------------------------------------------------------------
+
+print "Creating procedure 'sp_kill_rpc'..."
+go
+if object_id("sp_kill_rpc") <> NULL
+  drop proc sp_kill_rpc
+go
+
+create procedure sp_kill_rpc
+/* Copyright (c) 2001-2013 Rob Verschoor/Sypron B.V. */
+   @spid int,
+   @suid int,
+   @key varbinary(128)
+as
+begin
+declare @spid_suid int, @my_suname varchar(32)
+declare @killcmd varchar(25), @role_status int
+
+   set nocount on
+
+   -- check this procedure was invoked properly, using
+   -- the encrypted role password as a key
+   if @key is NULL or
+      @key <> (select password
+               from master.dbo.syssrvroles 
+               where name = "indirect_sa_role")
+   begin
+      print "Error: this procedure should only be invoked via 'sp_kill'."
+      return -1
+   end
+
+   -- check spid exists
+   select @spid_suid = suid
+   from master.dbo.sysprocesses 
+   where spid = @spid
+
+   if @@rowcount = 0
+   begin
+      print "Spid [%1!] not found", @spid
+      return -1
+   end
+
+   if @spid_suid <> @suid
+   begin
+      select @my_suname = suser_name(@suid)
+      print "Spid %1! is not owned by your login [%2!]", @spid, @my_suname
+      return -1
+   end
+
+   -- further validity checks are performed by 'kill' itself
+
+   -- create the 'kill' command string
+   select @killcmd = "kill" + str(@spid,5)
+
+   -- enable sa_role 
+   exec @role_status = sp_enable_indirect_sa_role @key
+
+   -- check for errors in granting the role
+   if @role_status <> 0
+   begin
+      return -1
+   end
+
+   -- issue the kill now that we have sa_role
+   execute(@killcmd)
+
+   -- disable sa_role 
+   set role indirect_sa_role off
+
+   --ready
+   return 0
+end
+go
+
+grant exec on sp_kill_rpc to public
+go
+
+--------------------------------------------------------------------------
+--
+-- Create the stored procedure 'sp_sysmon_public'
+-- This allows a non-priviliged user to use sp_sysmon
+-- 
+--------------------------------------------------------------------------
+
+print "Creating procedure 'sp_sysmon_public'..."
+go
+if object_id("sp_sysmon_public") <> NULL
+  drop proc sp_sysmon_public
+go
+
+create procedure sp_sysmon_public
+/* Copyright (c) 2001-2013 Rob Verschoor/Sypron B.V. */
+  @option  char(12) = NULL, 
+  @section char(80) = "NULL",
+  @applmon char(14) = NULL  
+as
+begin
+declare @cis_status int, @key varbinary(128)
+declare @rpc varchar(150), @server_alias varchar(32)
+
+   set nocount on
+
+   -- check the CIS setup
+   execute @cis_status = sp_rpc_setup_check @server_alias output
+   if @cis_status <> 0
+   begin
+      -- messages have already been printed in sp_rpc_setup_check
+      return -1
+   end
+
+   -- use the encrypted role password as a key to ensure
+   -- that sp_kill_rpc is invoked only via sp_kill; if this 
+   -- would be allowed, users could kill any other user's 
+   -- process, but we want to limit this to their own prcesses.
+   select @key = password
+   from master.dbo.syssrvroles 
+   where name = "indirect_sa_role"
+   
+   if @@rowcount = 0
+   begin
+      print "Error: Cannot find role 'indirect_sa_role'."
+      return -1
+   end
+
+   if @key is NULL
+   begin
+      print "Error: the role 'indirect_sa_role' must have a password."
+      return -1
+   end
+
+   --
+   -- now execute sp_sysmon_public_rpc as an RPC via CIS; this will 
+   -- execute sp_sysmon. Because this is done through CIS, users cannot 
+   -- break in to the stored procedure that activates sa_role, so there 
+   -- is no security risk 
+   --
+   set cis_rpc_handling on
+
+   select @rpc = @server_alias + ".sybsystemprocs.dbo.sp_sysmon_public_rpc"
+   execute @rpc @option, @section, @applmon, @key
+
+   set cis_rpc_handling off
+
+   --ready
+   return 0
+end
+go
+
+grant exec on sp_sysmon_public to public
+go
+
+--------------------------------------------------------------------------
+--
+-- Create the stored procedure 'sp_sysmon_public_rpc'
+-- This allows a non-priviliged user to use sp_sysmon.
+-- This is expected to be called from sp_sysmon_public
+-- 
+--------------------------------------------------------------------------
+
+print "Creating procedure 'sp_sysmon_public_rpc'..."
+go
+if object_id("sp_sysmon_public_rpc") <> NULL
+  drop proc sp_sysmon_public_rpc
+go
+
+create procedure sp_sysmon_public_rpc
+/* Copyright (c) 2001-2013 Rob Verschoor/Sypron B.V. */
+  @option  char(12) = NULL, 
+  @section char(80) = "NULL",
+  @applmon char(14) = NULL, 
+  @key varbinary(128)
+as
+begin
+declare @role_status int
+
+   set nocount on
+   -- don't validate parameters; leave this to sp_sysmon instead...
+
+   -- check this procedure was invoked properly, using
+   -- the encrypted role password as a key 
+   if @key is NULL or
+      @key <> (select password
+               from master.dbo.syssrvroles 
+               where name = "indirect_sa_role")
+   begin
+      print "Error: this procedure should only be invoked via 'sp_sysmon_public'."
+      return -1
+   end
+
+   -- enable sa_role 
+   exec @role_status = sp_enable_indirect_sa_role @key
+
+   -- check for errors in granting the role
+   if @role_status <> 0
+   begin
+      return -1
+   end
+
+   -- run sp_sysmon 
+   exec sp_sysmon @option, @section, @applmon
+
+   -- disable sa_role 
+   set role indirect_sa_role off
+
+   --ready
+   return 0
+end
+go
+
+grant exec on sp_sysmon_public_rpc to public
+go
+
+--------------------------------------------------------------------------
+--
+-- Create the stored procedure 'sp_showplan_public'
+-- This allows a non-priviliged user to use sp_showplan and dbcc sqltext
+-- 
+--------------------------------------------------------------------------
+
+print "Creating procedure 'sp_showplan_public'..."
+go
+if object_id("sp_showplan_public") <> NULL
+  drop proc sp_showplan_public
+go
+
+create procedure sp_showplan_public
+/* Copyright (c) 2001-2013 Rob Verschoor/Sypron B.V. */
+   @spid int = NULL,
+   @batch_id int = NULL output,
+   @context_id int = NULL output,
+   @stmt_num int = NULL output
+as
+begin
+declare @spid_suid int, @my_suname varchar(32), @cis_status int
+declare @key varbinary(128), @rpc varchar(150), @server_alias varchar(32)
+
+   set nocount on
+
+   if @spid is NULL
+   begin
+      print "Runs sp_showplan for a spid (session), which must be owned by your login."
+      print "Usage: sp_showplan_public <spid-no> [, @batch_id , @context_id , @stmt_num ]"
+      return -1
+   end
+
+   -- check the CIS setup
+   execute @cis_status = sp_rpc_setup_check @server_alias output
+   if @cis_status <> 0
+   begin
+      -- messages have already been printed in sp_rpc_setup_check
+      return -1
+   end
+
+   -- check spid exists
+   select @spid_suid = suid
+   from master.dbo.sysprocesses 
+   where spid = @spid
+
+   if @@rowcount = 0
+   begin
+      print "Spid [%1!] not found", @spid
+      return -1
+   end
+
+   if @spid_suid <> suser_id()
+   begin
+      select @my_suname = suser_name()
+      print "Spid %1! is not owned by your login [%2!]", @spid, @my_suname
+      return -1
+   end
+
+   -- use the encrypted role password as a key to ensure
+   -- that sp_showplan_public_rpc is executed only via 
+   -- sp_showplan_public; if this would be allowed, users could 
+   -- get information about any other user's 
+   -- process, but we want to limit this to their own prcesses.
+   select @key = password
+   from master.dbo.syssrvroles 
+   where name = "indirect_sa_role"
+   
+   if @@rowcount = 0
+   begin
+      print "Error: Cannot find role 'indirect_sa_role'."
+      return -1
+   end
+
+   if @key is NULL
+   begin
+      print "Error: the role 'indirect_sa_role' must have a password."
+      return -1
+   end
+
+   --
+   -- now execute sp_showplan_public_rpc as an RPC via CIS; this will 
+   -- execute sp_sysmon. Because this is done through CIS, users cannot 
+   -- break in to the stored procedure that activates sa_role, so there 
+   -- is no security risk 
+   --
+   set cis_rpc_handling on
+
+   select @rpc = @server_alias + ".sybsystemprocs.dbo.sp_showplan_public_rpc"
+   execute @rpc @spid, @batch_id output, @context_id output, @stmt_num output, @spid_suid, @key
+
+   set cis_rpc_handling off
+
+   --ready
+   return 0
+end
+go
+
+grant exec on sp_showplan_public to public
+go
+
+--------------------------------------------------------------------------
+--
+-- Create the stored procedure 'sp_showplan_public_rpc'
+-- This allows a non-priviliged user to use sp_sysmon.
+-- This is expected to be called from sp_showplan_public
+-- 
+--------------------------------------------------------------------------
+
+print "Creating procedure 'sp_showplan_public_rpc'..."
+go
+if object_id("sp_showplan_public_rpc") <> NULL
+  drop proc sp_showplan_public_rpc
+go
+
+create procedure sp_showplan_public_rpc
+/* Copyright (c) 2001-2013 Rob Verschoor/Sypron B.V. */
+   @spid int,
+   @batch_id int = NULL output,
+   @context_id int = NULL output,
+   @stmt_num int = NULL output,
+   @suid int,
+   @key varbinary(128)
+as
+begin
+declare @spid_suid int, @my_suname varchar(32)
+declare @role_status int
+
+   set nocount on
+
+   -- check this procedure was invoked properly, using
+   -- the encrypted role password as a key (this column
+   -- is not accessible for non-privileged users)
+   if @key is NULL or
+      @key <> (select password
+               from master.dbo.syssrvroles 
+               where name = "indirect_sa_role")
+   begin
+      print "Error: this procedure should only be invoked via 'sp_showplan_public'."
+      return -1
+   end
+
+   -- check spid exists
+   select @spid_suid = suid
+   from master.dbo.sysprocesses 
+   where spid = @spid
+
+   if @@rowcount = 0
+   begin
+      print "Spid [%1!] not found", @spid
+      return -1
+   end
+
+   if @spid_suid <> @suid
+   begin
+      select @my_suname = suser_name(@suid)
+      print "Spid %1! is not owned by your login [%2!]", @spid, @my_suname
+      return -1
+   end
+
+   -- enable sa_role 
+   exec @role_status = sp_enable_indirect_sa_role @key
+
+   -- check for errors in granting the role
+   if @role_status <> 0
+   begin
+      return -1
+   end
+
+   -- run sp_showplan 
+   exec sp_showplan @spid, @batch_id output, @context_id output, @stmt_num output
+
+   -- disable sa_role 
+   set role indirect_sa_role off
+
+   --ready
+   return 0
+end
+go
+
+grant exec on sp_showplan_public_rpc to public
+go
+
+--------------------------------------------------------------------------
+--
+-- perform the RPC/CIS check already now
+--
+--------------------------------------------------------------------------
+execute sp_rpc_setup_check NULL
+go
+
+--------------------------------------------------------------------------
+--
+-- Create the stored procedure 'sp_shutdown'
+-- This allows a non-priviliged user to shutdown the server
+-- via sp_shutdown_rpc
+-- 
+--------------------------------------------------------------------------
+
+print "Creating procedure 'sp_shutdown'..."
+go
+if object_id("sp_shutdown") <> NULL
+  drop proc sp_shutdown
+go
+
+create procedure sp_shutdown
+/* Copyright (c) 2001-2013 Rob Verschoor/Sypron B.V. */
+@opt varchar(20) = NULL
+as
+begin
+declare @cis_status int
+declare @key varbinary(128), @rpc varchar(150), @server_alias varchar(32)
+
+   set nocount on
+
+   select @opt = ltrim(rtrim(lower(@opt)))
+   if @opt not in ("with nowait", NULL, "")
+   begin
+      print "Error: only 'with nowait' may be specified."
+      return -1
+   end
+
+
+   -- check the CIS setup
+   execute @cis_status = sp_rpc_setup_check @server_alias output
+   if @cis_status <> 0
+   begin
+      -- messages have already been printed in sp_rpc_setup_check
+      return -1
+   end
+
+   -- use the encrypted role password as a key to ensure
+   -- that sp_shutdown_rpc is invoked only via sp_shutdown; if this 
+   -- would be allowed, users could shutdown any other user's 
+   -- process, but we want to limit this to their own prcesses.
+   select @key = password
+   from master.dbo.syssrvroles 
+   where name = "indirect_sa_role"
+   
+   if @@rowcount = 0
+   begin
+      print "Error: Cannot find role 'indirect_sa_role'."
+      return -1
+   end
+
+   if @key is NULL
+   begin
+      print "Error: the role 'indirect_sa_role' must have a password."
+      return -1
+   end
+
+   --
+   -- now execute sp_shutdown_rpc as an RPC via CIS; this will do the real shutdown.
+   -- because this is done via CIS, users cannot break in to the stored
+   -- procedure that activates sa_role, so there is no security risk 
+   --
+   set cis_rpc_handling on
+
+   select @rpc = @server_alias + ".sybsystemprocs.dbo.sp_shutdown_rpc"
+   execute @rpc @opt, @key
+
+   set cis_rpc_handling off
+
+   --ready
+   return 0
+end
+go
+
+grant exec on sp_shutdown to public
+go
+
+--------------------------------------------------------------------------
+--
+-- Create the stored procedure 'sp_shutdown_rpc'
+-- This allows a non-priviliged user to shutdown his own processes via sp_shutdown
+-- 
+--------------------------------------------------------------------------
+
+print "Creating procedure 'sp_shutdown_rpc'..."
+go
+if object_id("sp_shutdown_rpc") <> NULL
+  drop proc sp_shutdown_rpc
+go
+
+create procedure sp_shutdown_rpc
+/* Copyright (c) 2001-2013 Rob Verschoor/Sypron B.V. */
+   @opt varchar(20),
+   @key varbinary(128)
+as
+begin
+declare @role_status int
+
+   set nocount on
+
+   -- check this procedure was invoked properly, using
+   -- the encrypted role password as a key
+   if @key is NULL or
+      @key <> (select password
+               from master.dbo.syssrvroles 
+               where name = "indirect_sa_role")
+   begin
+      print "Error: this procedure should only be invoked via 'sp_shutdown'."
+      return -1
+   end
+
+   select @opt = ltrim(rtrim(lower(@opt)))
+   if @opt not in ("with nowait", NULL, "")
+   begin
+      print "Error: only 'with nowait' may be specified."
+      return -1
+   end
+
+   -- enable sa_role 
+   exec @role_status = sp_enable_indirect_sa_role @key
+
+   -- check for errors in granting the role
+   if @role_status <> 0
+   begin
+      return -1
+   end
+
+   -- issue the shutdown now that we have sa_role
+   set flushmessage on
+   if @opt = "with nowait"
+   begin
+      print "Shutting down 'with nowait'..."
+      shutdown with nowait
+   end
+   else
+   begin
+      print "Shutting down normally..."
+      shutdown
+   end
+
+   -- disable sa_role 
+   set role indirect_sa_role off
+
+   --ready
+   return 0
+end
+go
+
+grant exec on sp_shutdown_rpc to public
+go
+
+-- Another version check: requires 12.5.0.3 ESD2 or later, since
+-- the procedure below rely on new behaviour of the traceflags:
+-- when enabling 3604, this now takes effect immediately rather
+-- than in the next batch.
+
+set flushmessage on
+go
+
+-- First check for 12.5.0.3+
+if license_enabled('ASE_XRAY') is NULL
+begin
+   print ""
+   print ""
+   print "***************************************"
+   print "***************************************"
+   print " The stored procedures:"
+   print "   sp_optimizer_trace "
+   print "   sp_sqltext "
+   print " can only be installed in ASE version "
+   print " 12.5.0.3 ESD#2 or later."
+   print "***************************************"
+   print "***************************************"
+   print " "
+   print " "
+   print " "
+   print "Quitting now..."
+   print " "
+   select syb_quit()
+end
+go
+
+-- If it's 12.5.1+, we're OK; otherwise, need to check the ESD
+if license_enabled('ASE_XML') is NULL   -- check for 12.5.1+
+begin
+   -- At this point, we know we're at 12.5.0.3, so we need 
+   -- to figure out the precise ESD level. Fortunately, the 
+   -- exact version strings for 12.5.0.3 are all known...
+   declare @v varchar(100), @v2 varchar(1)
+   select @v = @@version
+   select @v = substring(@v,charindex("ESD", @v),6)
+   select @v = substring(@v,1,charindex("/", @v)-1)
+   select @v2 = right(@v,1)
+   if isnull(@v2,'1') = '1'
+   begin
+      print ""
+      print ""
+      print "***************************************"
+      print "***************************************"
+      print " The stored procedures:"
+      print "   sp_optimizer_trace "
+      print "   sp_sqltext "
+      print " can only be installed in ASE version "
+      print " 12.5.0.3 ESD#2 or later."
+      print "***************************************"
+      print "***************************************"
+      print " "
+      print " "
+      print " "
+      print "Quitting now..."
+      print " "
+      select syb_quit()
+   end
+end
+go
+
+use sybsystemprocs
+go
+
+--------------------------------------------------------------------------
+--
+-- To run a dbcc sqltext, sybase_ts_role is required. Unfortunately, 
+-- sybase_ts_role cannot be granted to another login in the regular way 
+-- (you'll get an error...).
+-- But we can work around this by inserting a row into sysattributes directly!
+-- I suppose the reason for not allowing this grant-to-role is security-related.
+-- This workaround doesn't cause a security problem, because indirect_sa_role 
+-- is password-protected, and the password is not known anyway (if this
+-- sounds puzzling, read the text at www.sypron.nl/grant_sa.html).
+-- 
+--------------------------------------------------------------------------
+
+print "Checking 'sybase_ts_role' has been granted to 'indirect_sa_role' ..."
+
+if role_contain("sybase_ts_role", "indirect_sa_role") = 0
+begin
+   declare @cmd varchar(200)
+   print "Granting role 'sybase_ts_role' to 'indirect_sa_role' ..."
+
+   exec sp_configure "allow updates", 1
+
+   set @cmd = 
+   "insert master.dbo.sysattributes values
+   (8, 2, 'UR', NULL, role_id('indirect_sa_role'), role_id('sybase_ts_role'),
+   NULL, NULL, NULL, NULL, NULL, NULL, NULL)"
+
+   -- In 15.7, we need two additional columns (both NULL)
+   -- The syscachinfo view was added in 15.7
+   if object_id("master.dbo.syscacheinfo") is NOT NULL
+   begin
+	   set @cmd = 
+	   "insert master.dbo.sysattributes values
+	   (8, 2, 'UR', NULL, role_id('indirect_sa_role'), role_id('sybase_ts_role'),
+	   NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL)"
+   end
+
+   execute (@cmd)
+
+   exec sp_configure "allow updates", 0
+end
+go
+
+--------------------------------------------------------------------------
+--
+-- Create the stored procedure 'sp_sqltext'
+-- This allows a non-priviliged user to run 'dbcc sqltext'
+-- via sp_sqltext_rpc
+-- 
+--------------------------------------------------------------------------
+
+print "Creating procedure 'sp_sqltext'..."
+go
+if object_id("sp_sqltext") <> null
+  drop proc sp_sqltext
+go
+
+create procedure sp_sqltext
+   @spid int = NULL
+as
+begin
+declare @spid_suid int, @my_suname varchar(32), @cis_status int
+declare @key varbinary(128), @rpc varchar(150), @server_alias varchar(32)
+ 
+   set nocount on
+
+   if @spid is NULL
+   begin 
+      print "Runs 'dbcc sqltext' on a spid (session), which must be owned by your login."
+      print "Usage: sp_sqltext <spid-no>"
+      print ""
+      print "NB: this procedure works only in ASE 12.5.0.3 ESD#2 (or later)."
+      return -1
+   end
+
+   -- check 'sybase_ts_role' has been granted to 'indirect_sa_role'
+   if role_contain("sybase_ts_role", "indirect_sa_role") = 0
+   begin
+      print "The role 'sybase_ts_role' has not been granted to 'indirect_sa_role'."
+      print "Re-run the installation script ('GRANT_SA.SQL') to fix this."
+      return -1
+   end
+
+   -- check the CIS setup
+   execute @cis_status = sp_rpc_setup_check @server_alias output
+   if @cis_status <> 0
+   begin
+      -- messages have already been printed in sp_rpc_setup_check
+      return -1
+   end
+   
+   -- check spid exists
+   select @spid_suid = suid
+   from master.dbo.sysprocesses 
+   where spid = @spid
+
+   if @@rowcount = 0
+   begin
+      print "Spid [%1!] not found", @spid
+      return -1
+   end
+
+   if @spid_suid <> suser_id()
+   begin
+      select @my_suname = suser_name()
+      print "Spid %1! is not owned by your login [%2!]", @spid, @my_suname
+      return -1
+   end
+
+   if @spid = @@spid
+   begin
+      select @my_suname = suser_name()
+      print "There's no point in looking at your own spid..."
+      return -1
+   end
+
+   -- use the encrypted role password as a key to ensure
+   -- that sp_sqltext_rpc is invoked only via sp_sqltext; if this 
+   -- would be allowed, users could dbcc_traceon any other user's 
+   -- process, but we want to limit this to their own prcesses.
+   select @key = password
+   from master.dbo.syssrvroles 
+   where name = "indirect_sa_role"
+   
+   if @@rowcount = 0
+   begin
+      print "Error: Cannot find role 'indirect_sa_role'."
+      return -1
+   end
+
+   if @key is NULL
+   begin
+      print "Error: the role 'indirect_sa_role' must have a password."
+      return -1
+   end
+
+   --
+   -- now execute sp_sqltext_rpc as an RPC via CIS; this will do the actual dbcc call.
+   -- because this is done via CIS, users cannot break in to the stored
+   -- procedure that activates sa_role, so there is no security risk 
+   --
+   set cis_rpc_handling on
+
+   select @rpc = @server_alias + ".sybsystemprocs.dbo.sp_sqltext_rpc"
+   execute @rpc @spid, @spid_suid, @key
+
+   set cis_rpc_handling off
+
+   --ready
+   return 0
+end
+go
+
+grant exec on sp_sqltext to public
+go
+
+--------------------------------------------------------------------------
+--
+-- Create the stored procedure 'sp_sqltext_rpc2'
+-- Runs the actual 'dbcc sqltext'; expected to be called from 
+-- sp_sqltext_rpc. There is no need to protect this procedure from being
+-- executed directly, since that would require system roles in the first 
+-- place.
+-- 
+--------------------------------------------------------------------------
+
+print "Creating procedure 'sp_sqltext_rpc2'..."
+go
+if object_id("sp_sqltext_rpc2") <> null
+  drop proc sp_sqltext_rpc2
+go
+
+create procedure sp_sqltext_rpc2
+   @spid int,
+   @suid int
+as
+begin
+declare @spid_suid int, @my_suname varchar(32)
+
+   set nocount on
+
+   -- check spid exists
+   select @spid_suid = suid
+   from master.dbo.sysprocesses 
+   where spid = @spid
+
+   if @@rowcount = 0
+   begin
+      print "Spid [%1!] not found", @spid
+      return -1
+   end
+
+   if @spid_suid <> @suid
+   begin
+      select @my_suname = suser_name(@suid)
+      print "Spid %1! is not owned by your login [%2!]", @spid, @my_suname
+      return -1
+   end
+
+   dbcc sqltext(@spid)
+
+   --ready
+   return 0
+end
+go
+
+grant exec on sp_sqltext_rpc2 to public
+go
+
+--------------------------------------------------------------------------
+--
+-- Create the stored procedure 'sp_sqltext_rpc'
+-- This allows a non-priviliged user to run 'dbcc sqltext' on his own 
+-- processes via sp_sqltext
+-- 
+--------------------------------------------------------------------------
+
+print "Creating procedure 'sp_sqltext_rpc'..."
+go
+if object_id("sp_sqltext_rpc") <> null
+  drop proc sp_sqltext_rpc
+go
+
+create procedure sp_sqltext_rpc
+   @spid int,
+   @suid int,
+   @key varbinary(128)
+as
+begin
+declare @spid_suid int, @my_suname varchar(32)
+declare @role_status int
+
+   set nocount on
+
+   -- check this procedure was invoked properly, using
+   -- the encrypted role password as a key
+   if @key is NULL or
+      @key <> (select password
+               from master.dbo.syssrvroles 
+               where name = "indirect_sa_role")
+   begin
+      print "Error: this procedure should only be invoked via 'sp_sqltext'."
+      return -1
+   end
+
+   -- enable sa_role 
+   exec @role_status = sp_enable_indirect_sa_role @key
+
+   -- check for errors in granting the role
+   if @role_status <> 0
+   begin
+      return -1
+   end
+   
+   -- since we cannot run a dbcc command inside exec-immediate, 
+   -- this is done in a separate procedure
+   dbcc traceon(3604)
+   exec sp_sqltext_rpc2 @spid, @suid
+   dbcc traceoff(3604)
+   
+   -- disable sa_role 
+   set role indirect_sa_role off
+
+   --ready
+   return 0
+end
+go
+
+grant exec on sp_sqltext_rpc to public
+go
+
+use sybsystemprocs
+go
+--------------------------------------------------------------------------
+--
+-- Create the stored procedure 'sp_optimizer_trace'
+-- This allows a non-priviliged user to issue dbcc traceon commands
+-- via sp_optimizer_trace_rpc
+--
+-- 'sp_optimizer_trace' is written by Steve Bradley, Steve.Bradley@NielsenMedia.com
+-- 
+--------------------------------------------------------------------------
+
+print "Creating procedure 'sp_optimizer_trace'..."
+go
+if object_id("sp_optimizer_trace") <> null
+  drop proc sp_optimizer_trace
+go
+
+create procedure sp_optimizer_trace
+/* Author: Steve Bradley (Steve.Bradley@NielsenMedia.com) - 2003 */ 
+   @src_code varchar(2000) = null -- can go up to 16384, since we're on 12.5
+   , @trace1 int = null
+   , @trace2 int = null
+   , @trace3 int = null
+as
+begin
+declare @cis_status int
+declare @key varbinary(128), @rpc varchar(150), @server_alias varchar(32)
+ 
+   set nocount on
+
+   -- check the CIS setup
+   execute @cis_status = sp_rpc_setup_check @server_alias output
+   if @cis_status <> 0
+   begin
+      -- messages have already been printed in sp_rpc_setup_check
+      return -1
+   end
+   
+   if @src_code is NULL or @trace1 is NULL
+   begin 
+      print "Executes T-SQL commands and displays corresponding optimizer output for "
+      print "traceflags 302, 310 or 317."
+      print "Usage: sp_optimizer_trace 'T-SQL commands...' , { 302 | 310 | 317 } [, ...]"
+      print ""
+      print "NB: this procedure works only in ASE 12.5.0.3 ESD#2 (or later)."
+      return -1
+   end
+
+   -- use the encrypted role password as a key to ensure
+   -- that sp_optimizer_trace_rpc is invoked only via sp_optimizer_trace; if this 
+   -- would be allowed, users could dbcc_traceon any other user's 
+   -- process, but we want to limit this to their own prcesses.
+   select @key = password
+   from master.dbo.syssrvroles 
+   where name = "indirect_sa_role"
+   
+   if @@rowcount = 0
+   begin
+      print "Error: Cannot find role 'indirect_sa_role'."
+      return -1
+   end
+
+   if @key is NULL
+   begin
+      print "Error: the role 'indirect_sa_role' must have a password."
+      return -1
+   end
+
+   --
+   -- now execute sp_optimizer_trace_rpc as an RPC via CIS; this will do the real dbcc_traceon.
+   -- because this is done via CIS, users cannot break in to the stored
+   -- procedure that activates sa_role, so there is no security risk 
+   --
+   set cis_rpc_handling on
+
+   select @rpc = @server_alias + ".sybsystemprocs.dbo.sp_optimizer_trace_rpc"
+   
+   print 'RPC: %1!', @rpc
+   
+   execute @rpc @src_code, @key, @trace1, @trace2, @trace3
+
+   set cis_rpc_handling off
+
+   --ready
+   return 0
+end
+go
+
+grant exec on sp_optimizer_trace to public
+go
+
+--------------------------------------------------------------------------
+--
+-- Create the stored procedure 'sp_optimizer_trace_rpc'
+-- This allows a non-priviliged user to dbcc_traceon his own processes via sp_optimizer_trace
+-- 
+--------------------------------------------------------------------------
+
+print "Creating procedure 'sp_optimizer_trace_rpc'..."
+go
+if object_id("sp_optimizer_trace_rpc") <> null
+  drop proc sp_optimizer_trace_rpc
+go
+
+create procedure sp_optimizer_trace_rpc
+/* Author: Steve Bradley (Steve.Bradley@NielsenMedia.com) - 2003 */ 
+   @src_code varchar(2000) -- can go up to 16384, since we're on 12.5
+   , @key varbinary(128)
+   , @trace1 int = null
+   , @trace2 int = null
+   , @trace3 int = null
+as
+begin
+declare @role_status int
+, @trace_cmd varchar(50)
+, @traceon_cmd varchar(50)
+, @traceoff_cmd varchar(50)
+
+   set nocount on
+
+   -- check this procedure was invoked properly, using
+   -- the encrypted role password as a key
+   if @key is NULL or
+      @key <> (select password
+               from master.dbo.syssrvroles 
+               where name = "indirect_sa_role")
+   begin
+      print "Error: this procedure should only be invoked via 'sp_optimizer_trace'."
+      return -1
+   end
+
+   -- further validity checks are performed by 'dbcc_traceon' itself
+
+   -- enable sa_role 
+   exec @role_status = sp_enable_indirect_sa_role @key
+
+   -- check for errors in granting the role
+   if @role_status <> 0
+   begin
+      return -1
+   end
+
+   -- issue the dbcc_traceon now that we have sa_role
+   -- dbcc traceon(3604,302)
+   -- build the dbcc traceon command
+   select @trace_cmd = convert(varchar(8),@trace1)
+   
+   if @trace2 <> null
+   begin
+         select @trace_cmd = @trace_cmd + ',' + convert(varchar(8),@trace2)
+   end
+   if @trace3 <> null
+   begin
+         select @trace_cmd = @trace_cmd + ',' + convert(varchar(8),@trace3)
+   end
+   
+   select @traceon_cmd = 'dbcc traceon(3604,' + @trace_cmd + ')'
+   select @traceoff_cmd = 'dbcc traceoff(3604,' + @trace_cmd + ')'
+   
+   print 'trace command: %1!', @traceon_cmd
+   
+   if @traceon_cmd = "dbcc traceon(3604,302)"
+   begin
+         dbcc traceon(3604,302)
+         print "Trace options in effect..."
+         print "   302: Print info about optimizer's index selection"
+   end
+   else if @traceon_cmd = "dbcc traceon(3604,310)"
+        begin
+              dbcc traceon(3604,310)
+         print "Trace options in effect..."
+         print "   310: Print info about optimizer's join selection (shows better join orders)"
+        end
+   else if @traceon_cmd = "dbcc traceon(3604,317)"
+        begin
+              dbcc traceon(3604,317)
+         print "Trace options in effect..."
+         print "   317: Print info about optimizer's join selection (shows rejected join orders)"
+        end
+   else if @traceon_cmd = "dbcc traceon(3604,302,310)"
+        begin
+              dbcc traceon(3604,302,310)
+         print "Trace options in effect..."
+         print "   302: Print info about optimizer's index selection"
+         print "   310: Print info about optimizer's join selection (shows better join orders)"
+        end
+   else if @traceon_cmd = "dbcc traceon(3604,302,317)"
+        begin
+              dbcc traceon(3604,302,317)
+         print "Trace options in effect..."
+         print "   302: Print info about optimizer's index selection"
+         print "   317: Print info about optimizer's join selection (shows rejected join orders)"
+        end
+   else if @traceon_cmd = "dbcc traceon(3604,310,317)"
+        begin
+              dbcc traceon(3604,310,317)
+         print "Trace options in effect..."
+         print "   310: Print info about optimizer's join selection (shows better join orders)"
+         print "   317: Print info about optimizer's join selection (shows rejected join orders)"
+        end
+   else if @traceon_cmd = "dbcc traceon(3604,302,310,317)"
+        begin
+              dbcc traceon(3604,302,310,317)
+         print "Trace options in effect..."
+         print "   302: Print info about optimizer's index selection"
+         print "   310: Print info about optimizer's join selection (shows better join orders)"
+         print "   317: Print info about optimizer's join selection (shows rejected join orders)"
+        end
+   else
+         begin
+              print 'Trace flags must be in numerical order from lowest to highest and only 302, 310, and 317 are valid'
+              return -1
+         end
+        
+   print 'Source code: %1!', @src_code     
+   exec (@src_code)
+   
+   print 'dbcc traceoff Command: %1!', @traceoff_cmd 
+   if @traceoff_cmd = "dbcc traceoff(3604,302)"
+   begin
+         dbcc traceoff(3604,302)
+   end
+   else if @traceoff_cmd = "dbcc traceoff(3604,310)"
+        begin
+              dbcc traceoff(3604,310)
+        end
+   else if @traceoff_cmd = "dbcc traceoff(3604,317)"
+        begin
+              dbcc traceoff(3604,317)
+        end
+   else if @traceoff_cmd = "dbcc traceoff(3604,302,310)"
+        begin
+              dbcc traceoff(3604,302,310)
+        end
+   else if @traceoff_cmd = "dbcc traceoff(3604,302,317)"
+        begin
+              dbcc traceoff(3604,302,317)
+        end
+   else if @traceoff_cmd = "dbcc traceoff(3604,310,317)"
+        begin
+              dbcc traceoff(3604,310,317)
+        end
+   else if @traceoff_cmd = "dbcc traceoff(3604,302,310,317)"
+        begin
+              dbcc traceoff(3604,302,310,317)
+        end
+
+   -- disable sa_role 
+   set role indirect_sa_role off
+
+   --ready
+   return 0
+end
+go
+
+grant exec on sp_optimizer_trace_rpc to public
+go
+
+-- 
+-- end of file
+--

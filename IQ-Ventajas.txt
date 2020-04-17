@@ -1,0 +1,38 @@
+Sybase IQ is a powerful query server designed to increase the speed of query performed against large data.
+
+Features of Sybase IQ
+
+vertical data storage
+Supported by Sybase central
+optimized access methods for all types of data
+Advantages of Sybase IQ
+
+Speed:
+       It is fast to implement as it allows multiple server configuration.It handles large amount of data and can load the data when users are querying.
+
+Economy
+       It saves a lot of disk space by storing only the index and index size is kept small by different data compression methods. Entire database
+
+      can be fully indexed which saves a lot of disk space rather than storing raw data.
+
+Flexibility
+      It is integrated with open client and open server. To the end user Sybase IQ might look like another RDBMS but it is not like other
+
+       database.It can load data from variety of sources.
+
+Other Benefits:
+
+Support for multi-server configurations.
+Reduced I/O.
+Rapid access to Information.
+Reduced disk requirements.
+Users can access data with variety of query tools.
+Key principles of Sybase IQ
+
+Column wise data structures
+     Stores data column wise rather than row wise which helps in returning only those columns which are necessary for query thus reducing I/O.
+
+Bit wise Indexing
+     It translates unique elements of column to bit mask and helps both high and low cardinality columns.
+     Low cardinality data: less than 1500 unique values.Example, gender.
+     High cardinality data: 1500 or more unique values.Example, Phone number. 

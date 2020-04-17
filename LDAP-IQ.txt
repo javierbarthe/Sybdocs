@@ -1,0 +1,66 @@
+SAP Sybase IQ 16 supports both LDAP and Kerberos external authentication methods, LDAP User authentication does require Advanced Security option (IQ_SECURITY) license.
+
+Below are steps for configuring LDAP connection in IQ 16:
+
+1.  Adding LDAP user authentication as a login method, does requires SET ANY SECURITY OPTION system privilege
+
+          set option public.login_mode='Standard,LDAPUA'
+
+setting  login_mode to 'Standard,LDAPUA' allows standard authentication in an LDAP only enviroment.
+
+2. Create an LDAP Server Configuration Object to allow LDAP user authentication. MANAGE ANY LDAP SERVER system privilege is required for creating LDAP Serer Configuration Object. URL should exactly same as it was added in LDAP Server
+
+$ cat crldap.sql
+
+
+CREATE LDAP SERVER secure_primary
+SEARCH DN
+     URL 'ldap://archer.sybase.com:389/dc=sybase,dc=com?dn?sub?cn=*'
+     ACCESS ACCOUNT'cn=Manager,dc=sybase,dc=com'
+     IDENTIFIED BY 'xxxxxx'
+AUTHENTICATION URL 'ldap://archer.sybase.com:389/'
+CONNECTION TIMEOUT  10
+CONNECTION RETRIES 3
+WITH ACTIVATE
+;
+
+dbisql -c 'dsn=mydsn' -nogui crldap.sql
+Execution time: 0.009 seconds
+
+3. Validating an LDAP Server Configuration Objects validates changes to the attribute of an existing LDAP configuration object and it rquires 'MANAGE ANY LDAP SERVER system privilege.
+
+dbisql -c 'dsn=mydsn' -nogui
+
+(DBA)> validate ldap server secure_primary
+Execution time: 0.287 seconds
+
+(DBA)>  validate ldap server secure_primary check root 'cn=root,ou=People,dc=sybase,dc=com'
+Execution time: 0.271 seconds
+
+4. Define the LDAP user authentication login policy options in any login policy, including root policy assigned to any user using LDAP user authentication, it requires THE MANAGE ANY LOGIN POLICY system privilege
+
+
+(DBA)> create login policy ldappolicy2 ldap_primary_server=secure_primary
+Execution time: 0.008 seconds
+
+5. Assign an  LDAP user authentication enabled policy to an existing user or newly created user to use LDAP user authentication.
+
+
+(DBA)> create user root identified by 'xxxx' login policy ldappolicy2
+Execution time: 0.008 seconds
+
+6. Test login authentication Method
+
+dbisql -c 'uid=root;pwd=ldapuserpwd' -host myhost -port xxxx-nogui
+
+(root)> select connection_property('Authtype')
+
+connection_property('Authtype')
+
+
+
+--------------------------------------------------------------------------------
+--------------------------------------------------------------------------------
+--------------------------------------------------------------------------------
+----------------
+LDAPUA
